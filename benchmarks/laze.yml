@@ -17,50 +17,16 @@ modules:
           - --config 'patch."${UPSTREAM_REPO}".ariel-os-boards.git="${FORKED_REPO}"'
           - --config 'patch."${UPSTREAM_REPO}".ariel-os-boards.rev="${DEP_REV}"'
 
-  - name: probe-rs-runner
-    help: use probe-rs as runner
-    conflicts:
-      - probe-rs
-      - semihosting
-    context:
-      - nrf
-      - rp2040
-      - stm32
-    provides_unique:
-      - old-runner
-    selects:
-      - ?debug-console
-    env:
-      global:
-        CARGO_RUNNER: "'probe-rs run ${PROBE_RS_PROTOCOL} --chip ${PROBE_RS_CHIP}'"
-  
-  - name: esp-runner
-    help: use esp-flash as runner
-    conflicts:
-      - probe-rs
-      - semihosting
-      - esp-println
-    context:
-      - esp
-    provides_unique:
-      - old-runner
-    selects:
-      - ?debug-console
-    env:
-      global:
-        CARGO_RUNNER: '"espflash flash --monitor ${ESPFLASH_LOG_FORMAT}"'
-
   - name: ariel-reallocation
     selects:
       - patch
       - benchmark-default
-      - old-runner
     provides_unique:
       - rev
     env:
       global:
         FORKED_REPO: https://github.com/elenaf9/RIOT-rs
-        DEP_REV: 9f162aa7512c4cb0f5726bbc6368e2f37c41f169
+        DEP_REV: 29f21cba6fb574a17d48514ee1448fe365ce1bb5
         FEATURES:
           - reallocation
 

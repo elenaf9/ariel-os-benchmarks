@@ -1,7 +1,1441 @@
-imports:
-  - git:
-      url: https://github.com/ariel-os/ariel-os
-      commit: 4b3eebd01d7e5a4858cb110a4321396e597861f2
+laze_required_version: 0.1.33
+
+contexts:
+  # base context that all other contexts inherit from
+  - name: default
+    env:
+      bindir: "${build-dir}/bin/${builder}/${app}"
+      CARGO:
+        - ${CARGO_WRAPPER}
+        - cargo
+
+    tasks:
+      info-modules:
+        help: List modules selected in this configuration
+        build: false
+        cmd:
+          - echo ${modules} | tr ' ' '\n' | sort
+
+  # base context for all Ariel OS applications
+  - name: ariel-os
+    parent: default
+    selects:
+      - executor-default
+      - ?critical-section
+      - ?hw/device-identity
+      - ?lto
+      - ?semihosting
+    env:
+      RUSTFLAGS:
+        - ${RUSTFLAGS_CONTEXTS}
+      SCRIPTS: ${relroot}/scripts
+      CARGO_ARGS:
+        - --config ${root}/${relroot}/ariel-os-cargo.toml
+      # While laze allows "export:" in rules and tasks to export laze
+      # variables to a rule's recipe shell environment, this would require
+      # those to be listed for *all* rules and tasks where they are needed.
+      # So until laze allows "global shell exporting of variables",
+      # "CARGO_ENV" is used for that.
+      CARGO_ENV:
+        - >-
+          OPENOCD_ARGS="${OPENOCD_ARGS}"
+          SCRIPTS=${SCRIPTS}
+          CONFIG_BOARD=${builder}
+          CARGO_BUILD_TARGET=${RUSTC_TARGET}
+          ${CARGO_TARGET_PREFIX}_RUNNER=${CARGO_RUNNER}
+          ${CARGO_TARGET_PREFIX}_RUSTFLAGS="${RUSTFLAGS}"
+          CARGO_TARGET_DIR=${relroot}/${build-dir}/bin/${builder}/cargo
+          CONFIG_EXECUTOR_STACKSIZE=${CONFIG_EXECUTOR_STACKSIZE}
+          CONFIG_ISR_STACKSIZE=${CONFIG_ISR_STACKSIZE}
+      PROFILE: release
+      QEMU_SYSTEM_ARM: >-
+        qemu-system-arm
+        -machine ${QEMU_MACHINE}
+        -nographic
+        -serial mon:stdio
+        -semihosting-config enable=on,target=native
+        -kernel
+      PROBE_RS_PROTOCOL: swd
+      CARGO_PRESHELL: []
+
+      # Stack size config
+      executor_stacksize_required_default: "8192"
+      isr_stacksize_required_default: "2048"
+      executor_stacksize_required:
+        # These defines the defaults. Other modules can append their needs,
+        # the maximum value will be chosen.
+        # Note: make sure to append to the list, not set single value!
+        - ${executor_stacksize_required_default}
+      isr_stacksize_required:
+        - ${isr_stacksize_required_default}
+      CONFIG_EXECUTOR_STACKSIZE: $(max (0, ${executor_stacksize_required}))
+      CONFIG_ISR_STACKSIZE: $(max (0, ${isr_stacksize_required}))
+
+    var_options:
+      # this turns ${FEATURES} from a list to "--features=feature1,feature2"
+      FEATURES:
+        start: --features=
+        joiner: ","
+      LOG:
+        joiner: ","
+      CARGO_PRESHELL:
+        # List of extra commands to be executed by the shell that runs cargo before cargo is run.
+        #
+        # This is typically used to source additional shell scripts that set up extra environment.
+        suffix: " && "
+      RUSTFLAGS_CONTEXTS:
+        from: contexts
+        prefix: --cfg context=\"
+        suffix: \"
+
+      # this prefixes `--protocol=` to `PROBE_RS_PROTOCOL`
+      PROBE_RS_PROTOCOL:
+        start: --protocol=
+
+      # Executor / ISR stacksize helpers
+      executor_stacksize_required:
+        joiner: ", "
+      isr_stacksize_required:
+        joiner: ", "
+
+    rules:
+      - name: LINK
+        description: CARGO ${out}
+        pool: console
+        always: true
+        cmd: >-
+          test "${SKIP_CARGO_BUILD}" = "1" && exit 0;
+          cd ${relpath} && ${CARGO_PRESHELL} ${CARGO_ENV} ${CARGO} ${CARGO_TOOLCHAIN} ${CARGO_ARGS} build --${PROFILE} ${FEATURES}
+          && cp ${relroot}/${build-dir}/bin/${builder}/cargo/${RUSTC_TARGET}/${PROFILE}/${app} ${relroot}/${out}
+          ${POST_LINK}
+
+      - name: GIT_DOWNLOAD
+        cmd: "D=$$(dirname ${out}); rm -rf $$D && git clone ${url} $$D -n && git -C $$D reset --hard ${commit} && touch ${out}"
+
+    tasks:
+      exec:
+        build: false
+        cmd:
+          - ${CARGO_PRESHELL} ${CARGO_ENV}
+
+      cargo:
+        workdir: ${relpath}
+        cmd:
+          - ${CARGO_PRESHELL} ${CARGO_ENV} ${CARGO} ${CARGO_TOOLCHAIN} ${CARGO_ARGS}
+        build: false
+
+      run:
+        build: false
+        workdir: ${appdir}
+        cmd:
+          - ${CARGO_PRESHELL} ${CARGO_ENV} ${CARGO} ${CARGO_TOOLCHAIN} ${CARGO_ARGS} run --${PROFILE} ${FEATURES}
+
+      clippy:
+        build: false
+        workdir: ${appdir}
+        cmd:
+          - ${CARGO_PRESHELL} ${CARGO_ENV} ${CARGO} ${CARGO_TOOLCHAIN} ${CARGO_ARGS} clippy ${FEATURES}
+
+      debug:
+        workdir: ${appdir}
+        cmd:
+          - ${CARGO_PRESHELL} ${CARGO_ENV} ${CARGO} ${CARGO_TOOLCHAIN} ${CARGO_ARGS} run --${PROFILE} ${FEATURES}
+        build: false
+        ignore_ctrl_c: true
+
+      gdb:
+        cmd:
+          - arm-none-eabi-gdb -ex "target extended-remote localhost:1337" ${out}
+        build: false
+        ignore_ctrl_c: true
+
+      bloat:
+        workdir: ${appdir}
+        cmd:
+          - ${CARGO_PRESHELL} ${CARGO_ENV} ${CARGO} ${CARGO_TOOLCHAIN} ${CARGO_ARGS} bloat --${PROFILE} ${FEATURES}
+        build: false
+
+      tree:
+        workdir: ${appdir}
+        cmd:
+          - ${CARGO_PRESHELL} ${CARGO_ENV} ${CARGO} ${CARGO_TOOLCHAIN} ${CARGO_ARGS} tree ${FEATURES}
+        build: false
+
+      size:
+        cmd:
+          - llvm-size ${out}
+
+      objdump:
+        cmd:
+          - rust-objdump -S ${out}
+
+  - name: nrf
+    help: Nordic MCU support (based on embassy-nrf)
+    parent: ariel-os
+    selects:
+      - ?probe-rs
+    provides:
+      - has_device_identity
+      - has_swi
+      - sw/benchmark
+
+  - name: nrf51
+    parent: nrf
+    selects:
+      - cortex-m0
+    provides:
+      - has_hwrng
+
+  - name: bbc-microbit-base
+    # this is a context, not a builder, to be used as parent by  "bbc-microbit" and
+    # "bbc-microbit-qemu"
+    parent: nrf51
+    selects:
+      - "bbc-microbit disabled due to missing nrf51 support in embassy"
+    env:
+      OPENOCD_ARGS:
+        - "-f board/nordic_nrf52_dk.cfg"
+
+  - name: nrf52
+    parent: nrf
+    provides:
+      - has_hwrng
+      - has_storage_support
+    env:
+      CARGO_RUNNER:
+        - ${SCRIPTS}/debug-openocd.sh
+      OPENOCD_ARGS:
+        - "-f board/nordic_nrf52_dk.cfg"
+
+  - name: nrf52832
+    parent: nrf52
+    selects:
+      - cortex-m4f
+    env:
+      PROBE_RS_CHIP: nrf52832_xxAA
+
+  - name: nrf52833
+    parent: nrf52
+    selects:
+      - cortex-m4f
+    env:
+      PROBE_RS_CHIP: nrf52833_xxAA
+
+  - name: nrf52840
+    parent: nrf52
+    selects:
+      - cortex-m4f
+    env:
+      PROBE_RS_CHIP: nrf52840_xxAA
+
+  - name: nrf53
+    parent: nrf
+
+  - name: nrf5340
+    parent: nrf53
+    provides:
+      - has_storage_support
+    selects:
+      - cortex-m33f
+    env:
+      PROBE_RS_CHIP: nrf5340_xxAA
+
+  - name: nrf91
+    parent: nrf
+
+  - name: nrf9160
+    parent: nrf91
+    provides:
+      - has_storage_support
+    selects:
+      - cortex-m33f
+    env:
+      PROBE_RS_CHIP: nRF9160_xxAA
+
+  - name: rp
+    help: Raspberry Pi Pico (2) MCU support (based on embassy-rp)
+    parent: ariel-os
+    provides:
+      - has_hwrng
+      - has_swi
+      - sw/benchmark
+
+  - name: rp2040
+    parent: rp
+    selects:
+      # This module must stay before `cortex-m0-plus` to keep correct linker settings order.
+      - rp-link-arg
+      - cortex-m0-plus
+      - ?probe-rs
+    provides:
+      - has_multi_core_support
+      - has_storage_support
+    env:
+      PROBE_RS_CHIP: RP2040
+      CARGO_RUNNER:
+        - ${SCRIPTS}/debug-openocd.sh
+      OPENOCD_ARGS:
+        - "-f interface/cmsis-dap.cfg -f target/rp2040.cfg"
+    tasks:
+      debug-rs:
+        cmd:
+          - probe-rs debug --chip ${PROBE_RS_CHIP} --exe ${out}
+
+  - name: rp235xa
+    parent: rp
+    selects:
+      - cortex-m33f
+      - ?probe-rs
+    provides:
+      - has_multi_core_support
+      - has_storage_support
+    env:
+      PROBE_RS_CHIP: RP235x
+      CARGO_RUNNER:
+        - ${SCRIPTS}/debug-openocd.sh
+      OPENOCD_ARGS:
+        - "-f interface/cmsis-dap.cfg -f target/rp2040.cfg"
+    tasks:
+      flash:
+        cmd:
+          - picotool load -u -v -x -t elf ${out}
+
+  - name: esp
+    parent: ariel-os
+    selects:
+      - ?debug-console
+      - ?esp-println
+    provides:
+      - has_executor_single_thread_support
+      - has_hwrng
+    env:
+      RUSTFLAGS:
+        # linkall first
+        - -Clink-arg=-Tlinkall.x
+        # this might be needed for backtraces. it is needed for probe-rs.
+        - -C force-frame-pointers
+      CARGO_ARGS:
+        - -Zbuild-std=core,alloc
+
+  - name: esp32
+    parent: esp
+    selects:
+      - xtensa
+    env:
+      CARGO_TOOLCHAIN: +esp
+      RUSTC_TARGET: xtensa-esp32-none-elf
+      CARGO_TARGET_PREFIX: CARGO_TARGET_XTENSA_ESP32_NONE_ELF
+      CC: xtensa-esp32-elf-gcc
+
+  - name: esp-wroom-32
+    parent: esp32
+
+  - name: esp32c3
+    parent: esp
+    selects:
+      - riscv
+    provides:
+      - sw/benchmark
+    provides_unique: [c-function-abort]
+    env:
+      RUSTC_TARGET: riscv32imc-unknown-none-elf
+      PROBE_RS_CHIP: esp32c3
+      PROBE_RS_PROTOCOL: jtag
+      CARGO_TARGET_PREFIX: CARGO_TARGET_RISCV32IMC_UNKNOWN_NONE_ELF
+
+  - name: esp-c3-01m
+    parent: esp32c3
+
+  - name: esp32c6
+    parent: esp
+    selects:
+      - riscv
+    provides:
+      - sw/benchmark
+    provides_unique: [c-function-abort]
+    env:
+      RUSTC_TARGET: riscv32imac-unknown-none-elf
+      PROBE_RS_CHIP: esp32c6
+      PROBE_RS_PROTOCOL: jtag
+      CARGO_TARGET_PREFIX: CARGO_TARGET_RISCV32IMAC_UNKNOWN_NONE_ELF
+
+  - name: esp32-c6-wroom-1
+    parent: esp32c6
+
+  - name: esp32s3
+    parent: esp
+    selects:
+      - xtensa
+    provides:
+      - has_multi_core_support
+      - sw/benchmark
+    provides_unique: [c-function-abort]
+    env:
+      CARGO_TOOLCHAIN: +esp
+      RUSTC_TARGET: xtensa-esp32s3-none-elf
+      PROBE_RS_CHIP: esp32s3
+      PROBE_RS_PROTOCOL: jtag
+      CARGO_TARGET_PREFIX: CARGO_TARGET_XTENSA_ESP32S3_NONE_ELF
+      CC: xtensa-esp32s3-elf-gcc
+
+  - name: esp32-s3-wroom-1
+    parent: esp32s3
+
+  - name: stm32
+    help: STM32 support (based on embassy-stm32)
+    parent: ariel-os
+    selects:
+      - ?probe-rs
+    provides:
+      - has_device_identity
+      - sw/benchmark
+    env:
+      OPENOCD_ARGS: foo
+
+  - name: stm32c031c6
+    parent: stm32
+    selects:
+      - cortex-m0-plus
+    disables:
+      # TODO: embedded-test currently hard-codes 16k for its thread
+      - embedded-test
+    env:
+      isr_stacksize_required_default: "1024"
+      executor_stacksize_required_default: "3072"
+      PROBE_RS_CHIP: STM32C031C6
+
+  - name: stm32f401re
+    parent: stm32
+    selects:
+      - cortex-m4f
+    env:
+      PROBE_RS_CHIP: STM32F401RE
+      RUSTFLAGS:
+        - --cfg capability=\"async-flash-driver\"
+
+  - name: stm32h755zi
+    parent: stm32
+    selects:
+      # TODO: also has a cortex-m4f
+      - cortex-m7f
+    provides:
+      - has_hwrng
+      - has_storage_support
+    env:
+      PROBE_RS_CHIP: STM32H755ZI
+      RUSTFLAGS:
+        - --cfg capability=\"hw/stm32-dual-core\"
+        - --cfg capability=\"hw/stm32-hash-rng\"
+        - --cfg capability=\"hw/stm32-usb-synopsis\"
+
+  - name: stm32wb55rg
+    parent: stm32
+    selects:
+      - cortex-m4f
+    provides:
+      - has_hwrng
+      - has_storage_support
+    env:
+      PROBE_RS_CHIP: STM32WB55RG
+      RUSTFLAGS:
+        - --cfg capability=\"hw/stm32-rng\"
+        - --cfg capability=\"hw/stm32-usb-lp\"
+
+  - name: stm32wba55cg
+    parent: stm32
+    selects:
+      - cortex-m33f
+    provides:
+      - has_hwrng
+    env:
+      PROBE_RS_CHIP: STM32WBA55CG
+      RUSTFLAGS:
+        - --cfg capability=\"hw/stm32-rng\"
+
+modules:
+  - name: thumbv6m-none-eabi
+    env:
+      global:
+        RUSTC_TARGET: thumbv6m-none-eabi
+        CARGO_TARGET_PREFIX: CARGO_TARGET_THUMBV6M_NONE_EABI
+        RUSTFLAGS:
+          - --cfg armv6m
+
+  - name: thumbv7m-none-eabi
+    env:
+      global:
+        RUSTC_TARGET: thumbv7m-none-eabi
+        CARGO_TARGET_PREFIX: CARGO_TARGET_THUMBV7M_NONE_EABI
+        RUSTFLAGS:
+          - --cfg armv7m
+
+  - name: thumbv7em-none-eabi
+    env:
+      global:
+        RUSTC_TARGET: thumbv7em-none-eabi
+        CARGO_TARGET_PREFIX: CARGO_TARGET_THUMBV7EM_NONE_EABI
+        RUSTFLAGS:
+          - --cfg armv7m
+
+  - name: thumbv7em-none-eabihf
+    env:
+      global:
+        RUSTC_TARGET: thumbv7em-none-eabihf
+        CARGO_ENV_TARGET: CARGO_TARGET_THUMBV7EM_NONE_EABIHF
+        RUSTFLAGS:
+          - --cfg armv7m
+
+  - name: thumbv8m.main-none-eabi
+    env:
+      global:
+        RUSTC_TARGET: thumbv8m.main-none-eabi
+        CARGO_TARGET_PREFIX: CARGO_TARGET_THUMBV8M_MAIN_NONE_EABI
+        RUSTFLAGS:
+          - --cfg armv8m
+
+  - name: thumbv8m.main-none-eabihf
+    env:
+      global:
+        RUSTC_TARGET: thumbv8m.main-none-eabihf
+        CARGO_TARGET_PREFIX: CARGO_TARGET_THUMBV8M_MAIN_NONE_EABIHF
+        RUSTFLAGS:
+          - --cfg armv8m
+
+  - name: cortex-m
+    env:
+      global:
+        OBJCOPY: arm-none-eabi-objcopy
+        RUSTFLAGS:
+          - -Clink-arg=${LINK_ARG_PREFIX}--nmagic
+          - -Clink-arg=${LINK_ARG_PREFIX}--no-eh-frame-hdr
+          - -Clink-arg=-Tlinkme.x
+          - -Clink-arg=-Tlink.x
+          - -Clink-arg=-Teheap.x
+          - -Clink-arg=-Tdevice.x
+          - -Clink-arg=-Tisr_stack.x
+          - -Clink-arg=-Tkeep-stack-sizes.x
+          - --cfg context=\"cortex-m\"
+          - -Z emit-stack-sizes
+
+  - name: cortex-m0
+    selects:
+      - cortex-m
+      - thumbv6m-none-eabi
+    env:
+      global:
+        RUSTFLAGS:
+          - --cfg context=\"cortex-m0\"
+
+  - name: cortex-m0-plus
+    selects:
+      - cortex-m
+      - thumbv6m-none-eabi
+    env:
+      global:
+        RUSTFLAGS:
+          - --cfg context=\"cortex-m0-plus\"
+
+  - name: cortex-m4
+    selects:
+      - cortex-m
+      - thumbv7em-none-eabi
+    env:
+      global:
+        RUSTFLAGS:
+          - --cfg context=\"cortex-m4\"
+
+  - name: cortex-m4f
+    selects:
+      - cortex-m
+      - thumbv7em-none-eabi # actually eabihf, but ariel-os doesn't support hard float yet
+    env:
+      global:
+        RUSTFLAGS:
+          - --cfg context=\"cortex-m4f\"
+
+  - name: cortex-m7f
+    selects:
+      - cortex-m
+      - thumbv7em-none-eabi # actually eabihf, but ariel-os doesn't support hard float yet
+    env:
+      global:
+        RUSTFLAGS:
+          - --cfg context=\"cortex-m7f\"
+
+  - name: cortex-m33f
+    selects:
+      - cortex-m
+      - thumbv8m.main-none-eabi # actually eabihf, but ariel-os doesn't support hard float yet
+    env:
+      global:
+        RUSTFLAGS:
+          - --cfg context=\"cortex-m33f\"
+
+  - name: xtensa
+    env:
+      global:
+        RUSTFLAGS:
+          - --cfg context=\"xtensa\"
+        CFLAGS:
+          - -mlongcalls
+        CARGO_PRESHELL:
+          # ~/export-esp.sh is the common location, but espup install can
+          # override it with its --export-file argument, which is done in CI;
+          # the environment variable is used by espup and exported by its action.
+          #
+          # Note that one \ escapes for YAML, the reaming \ escapes for laze,
+          # and the second $ escapes for laze's internal ninja, resulting in
+          # the shell to see just ${ESPUP_...
+          - . $\\${ESPUP_EXPORT_FILE:-~/export-esp.sh}
+
+  - name: riscv
+    env:
+      global:
+        RUSTFLAGS:
+          - --cfg context=\"riscv\"
+          - -Clink-arg=-Tisr_stack.x
+          - -Clink-arg=-Tlinkme-region-alias.x
+          - -Clink-arg=-Tlinkme.x
+
+  - name: rp-link-arg
+    help: helper module that ensures link-rp.x is added behind cortex-m ld scripts
+    env:
+      global:
+        RUSTFLAGS:
+          - "-Clink-arg=-Tlink-rp.x"
+
+  ## System functionality modules
+  - name: alloc
+    context: ariel-os
+    env:
+      global:
+        FEATURES:
+          - ariel-os/alloc
+
+  - name: c-compiler
+    help: Configures a C compiler (which is used by build crates such as `cc`).
+    # This may later also check for whether a C compiler is present on the
+    # selected platform in the first place.
+    env:
+      global:
+        # It's fine if either is not set -- that is how the ARM platforms work,
+        # the `cc` crate figures out a good compiler. On ESP, things are not so
+        # solid, and the context contributes variables.
+        CARGO_ENV:
+          - CC="${CC}"
+          - CFLAGS="${CFLAGS}"
+
+  - name: debug-console
+    context: ariel-os
+    selects:
+      - ?debug-logging-facade-default
+      - ?panic-printing
+    env:
+      global:
+        FEATURES:
+          - ariel-os/debug-console
+
+  # This module should be hard-selected when an application *requires* debug
+  # logging.
+  - name: debug-logging-facade-default
+    selects:
+      - ?defmt
+      - ?log
+      - debug-logging-facade
+
+  - name: defmt
+    help: Use the `defmt` crate as the debug logging facade
+    provides_unique:
+      - debug-logging-facade
+    env:
+      global:
+        FEATURES:
+          - ariel-os/defmt
+        RUSTFLAGS:
+          - -Clink-arg=-Tdefmt.x
+        ESPFLASH_LOG_FORMAT: "--log-format defmt"
+        CARGO_ENV:
+          - DEFMT_LOG=info,${LOG}
+
+  - name: log
+    help: Use the `log` crate as the debug logging facade
+    provides_unique:
+      - debug-logging-facade
+    env:
+      global:
+        FEATURES:
+          - ariel-os/log
+        CARGO_ENV:
+          - DEBUG_LOG_LEVEL=${LOG}
+
+  - name: panic-printing
+    context: ariel-os
+    env:
+      global:
+        FEATURES:
+          - ariel-os/panic-printing
+
+  - name: lto
+    context: ariel-os
+    env:
+      global:
+        RUSTFLAGS:
+          - -Cembed-bitcode=yes
+          - -Clto=fat
+          - -Ccodegen-units=1
+
+  - name: inline225
+    context: ariel-os
+    env:
+      global:
+        RUSTFLAGS:
+          - -Cllvm-args=-inline-threshold -Cllvm-args=225
+
+  - name: build_std
+    context: ariel-os
+    env:
+      global:
+        CARGO_ARGS:
+          - -Zbuild-std
+
+  - name: no_overflow_checks
+    context: ariel-os
+    env:
+      global:
+        RUSTFLAGS:
+          - -Coverflow-checks=off
+
+  - name: opt_speed
+    context: ariel-os
+    env:
+      global:
+        RUSTFLAGS:
+          - -Copt-level=3
+        # note: this overrides CFLAGS_OPT in ariel-os context
+        CFLAGS_OPT: -O3
+
+  - name: opt_size
+    context: ariel-os
+    env:
+      global:
+        RUSTFLAGS:
+          - -Copt-level=z
+        # note: this overrides CFLAGS_OPT in ariel-os context
+        CFLAGS_OPT: -Oz
+
+  - name: thread_info
+    # enable thread names & stack info
+    context: ariel-os
+    env:
+      global:
+        FEATURES:
+          - ariel-os/thread_info
+
+  - name: cross-language-lto
+    help: Enable cross-language LTO
+    # This requires rustc's llvm and clang's llvm version to match.
+    context: ariel-os
+    selects:
+      - lto
+      - linker-clang
+    env:
+      global:
+        RUSTFLAGS:
+          - "-Clinker-plugin-lto"
+
+  - name: linker-clang
+    help: Use clang/lld to link
+    context: ariel-os
+    env:
+      global:
+        RUSTFLAGS:
+          - "-Clinker=clang"
+          - "-Clink-arg=-fuse-ld=lld"
+          - "-Clink-arg=--target=${RUSTC_TARGET}"
+          - "-Clink-arg=-v"
+        LINK_ARG_PREFIX: -Wl,
+
+  - name: probe-rs
+    help: use probe-rs as runner
+    selects:
+      - ?debug-console
+      - rtt-target
+
+    env:
+      global:
+        CARGO_RUNNER: "'probe-rs run ${PROBE_RS_PROTOCOL} --chip ${PROBE_RS_CHIP} --preverify'"
+
+    tasks:
+      flash-erase-all:
+        help: Erases the whole chip including user data. Unlocks it if locked.
+        build: false
+        cmd:
+          - probe-rs erase --chip ${PROBE_RS_CHIP} --allow-erase-all
+
+      flash:
+        help: Flashes the target using probe-rs
+        cmd:
+          - probe-rs download --chip ${PROBE_RS_CHIP} ${out}
+          - probe-rs reset --chip ${PROBE_RS_CHIP}
+
+      debug:
+        help: Starts a probe-rs gdb server
+        cmd:
+          - probe-rs gdb --chip ${PROBE_RS_CHIP}
+
+      reset:
+        help: Resets the target
+        cmd:
+          - probe-rs reset --chip ${PROBE_RS_CHIP}
+
+  - name: openocd
+    tasks:
+      flash:
+        cmd:
+          - >-
+            _flash () { openocd
+            ${OPENOCD_ADAPTER_INIT}
+            ${OPENOCD_ARGS}
+            -c 'init'
+            -c 'targets'
+            -c 'reset halt'
+            -c "flash write_image erase \"${1}\" 0 elf"
+            -c "verify_image \"${1}\" 0 elf"
+            -c 'reset run'
+            -c 'shutdown' ; } ;
+            _flash ${out}
+
+      reset:
+        build: false
+        cmd:
+          - >-
+            openocd
+            ${OPENOCD_ARGS}
+            -c 'init'
+            -c 'targets'
+            -c 'reset'
+            -c 'shutdown'
+
+  - name: network
+    selects:
+      - network_device
+      - network-config-default
+
+  - name: network-config-default
+    help: use default network configuration method
+    selects:
+      - ?network-config-dhcp
+      - ?network-config-static
+      - network-config
+
+  - name: network-config-dhcp
+    help: use DHCPv4 for network configuration
+    selects:
+      - network
+    provides_unique:
+      - network-config
+
+  - name: network-config-static
+    help: use static IP network configuration
+    selects:
+      - network
+    provides_unique:
+      - network-config
+    env:
+      global:
+        FEATURES:
+          - ariel-os/network-config-static
+
+  - name: sw/storage
+    selects:
+      - has_storage_support
+    env:
+      global:
+        FEATURES:
+          - ariel-os/storage
+        RUSTFLAGS:
+          - -Clink-arg=-Tstorage.x
+
+  - name: has_storage_support
+    selects:
+      - doc-only
+
+  - name: sw/threading
+    selects:
+      - ?multi-core
+    env:
+      global:
+        FEATURES:
+          - ariel-os/threading
+
+  - name: wifi-cyw43
+    selects:
+      - has_wifi_cyw43
+    provides_unique:
+      - network_device
+    env:
+      global:
+        FEATURES:
+          - ariel-os/wifi-cyw43
+
+  - name: has_wifi_cyw43
+    selects:
+      - doc-only
+
+  - name: usb-ethernet
+    provides_unique:
+      - network_device
+    selects:
+      - usb
+    conflicts:
+      # there is an issue on esp32s3, the only esp32 that we have usb support for.
+      - xtensa
+    env:
+      global:
+        FEATURES:
+          - ariel-os/usb-ethernet
+
+  - name: usb
+    selects:
+      - hw/usb-device-port
+    env:
+      global:
+        FEATURES:
+          - ariel-os/usb
+
+  - name: hw/usb-device-port
+    help: provided if a device has a USB device port wired up
+    selects:
+      - has_usb_device_port
+    env:
+      global:
+        RUSTFLAGS:
+          - --cfg capability=\"hw/usb-device-port\"
+
+  - name: has_usb_device_port
+    selects:
+      - doc-only
+
+  - name: hw/device-identity
+    help: provided if the device implements ariel-os-identity
+    selects:
+      - has_device_identity
+    env:
+      global:
+        RUSTFLAGS:
+          - --cfg capability=\"hw/device-identity\"
+
+  - name: has_device_identity
+    selects:
+      - doc-only
+
+  - name: hwrng
+    help: The board's peripherals are suitable for passing into ariel_os_random::construct_rng.
+    selects:
+      - has_hwrng
+    env:
+      global:
+        FEATURES:
+          - ariel-os/hwrng
+
+  - name: has_hwrng
+    selects:
+      - doc-only
+
+  - name: coap
+    help: Basic support for the CoAP protocol.
+
+      On its own, this does nothing but load code; this should be auto-selected
+      by coap-client and/or coap-server as per the needs of other modules and
+      the application.
+    selects:
+      - random
+      - network
+      # A NoSec version (coap-server-config-unprotected) could be made to be
+      # buildable without a C compiler, but right now it's easier to just make
+      # the C compiler a prerequisite.
+      - c-compiler
+      # These are usually provided by liboscore's features, which are selected through this
+      # unless provided by the context.
+      - c-function-assert
+      - c-function-abort
+    env:
+      global:
+        FEATURES:
+          - ariel-os/coap
+        executor_stacksize_required:
+          - "32768"
+
+  - name: coap-server
+    help: Support for applications to set up CoAP server handlers.
+
+      When an application selects this, it needs to run `ariel_os::coap::coap_run()`
+      in a task; otherwise, other components (eg. system components that also
+      run on the CoAP server, or the CoAP client that depends on the server
+      loop to run) get stalled.
+    # Modules that want to inject a CoAP server will *not* depend on this, and
+    # will have their own entry point when they exist.
+    selects:
+      - coap
+      # This does *not* depend on (or select) coap-server-config yet, because
+      # doing so would cause a config to be auto-selected, and there's none
+      # that can currently be recommended without explicit configuration.
+    env:
+      global:
+        FEATURES:
+          - ariel-os/coap-server
+
+  - name: coap-server-config-storage
+    help: Configure the CoAP server to accept requests depending on build- and runtime configuration
+    selects:
+      - coap
+      - sw/storage
+    provides_unique:
+      - coap-server-config
+    env:
+      global:
+        FEATURES:
+          - ariel-os/coap-server-config-storage
+        # Path is relative to the appdir from which CARGO_ENV will be interpreted
+        PEERS_YML: peers.yml
+        CARGO_ENV:
+          # By the time a build script sees this, Cargo has chdir'd into *its*
+          # source, so we better pass an absolute path.
+          - PEERS_YML=$$(realpath ${PEERS_YML})
+
+  - name: coap-server-config-unprotected
+    help:
+      Configure the CoAP server to accept any request without authorization checks.
+
+      The device will have no cryptographic identity for CoAP, and not even
+      accept opportunistic EDHOC.
+    selects:
+      - coap
+    provides_unique: [coap-server-config]
+    env:
+      global:
+        FEATURES:
+          - ariel-os/coap-server-config-unprotected
+
+  - name: coap-server-config-demokeys
+    help:
+      Configure the CoAP server as expected by simple examples that expect a fixed server key.
+
+      This configuration may change over time, in lockstep with the examples' setup.
+    selects:
+      - coap
+    provides_unique: [coap-server-config]
+    env:
+      global:
+        FEATURES:
+          - ariel-os/coap-server-config-demokeys
+
+  - name: coap-client
+    help: Support for CoAP client functionality.
+    selects:
+      - coap
+
+  - name: liboscore-provide-abort
+    help: Make liboscore provide an implementation of the `abort` C function that it needs.
+    env:
+      global:
+        FEATURES:
+          - ariel-os/liboscore-provide-abort
+    provides_unique: [c-function-abort]
+
+  - name: liboscore-provide-assert
+    help: Make liboscore provide an implementation of the `assert` C function that it needs.
+    env:
+      global:
+        FEATURES:
+          - ariel-os/liboscore-provide-assert
+    provides_unique: [c-function-assert]
+
+  - name: random
+    help: A system-wide RNG is available (through the ariel_os::random module).
+
+      As the ariel_os::random module will refuse operation at run time if not
+      properly initialized, this depends on sources of original entropy.
+    selects:
+      # could later alternatively depend on mutable config storage
+      - hwrng
+    env:
+      global:
+        FEATURES:
+          - ariel-os/random
+
+  - name: sw/benchmark
+    help: provided if a target supports `benchmark()`
+    selects:
+      - doc-only
+
+  - name: wifi-esp
+    selects:
+      - riscv:
+          - wifi-esp-xor-threads
+    context:
+      - esp
+    provides_unique:
+      - network_device
+    env:
+      global:
+        FEATURES:
+          - ariel-os/wifi-esp
+
+  - name: wifi-esp-xor-threads
+    help: Helper module to conditionally make esp-wifi conflict with threads on esp32 riscv
+    selects:
+      - sw/threading:
+          - wifi-with-threads-currently-broken-on-esp-riscv
+
+  - name: executor-thread
+    help: use embassy executor within ariel-os-threads thread
+    provides_unique:
+      - executor
+    env:
+      global:
+        FEATURES:
+          - ariel-os/executor-thread
+
+  - name: executor-single-thread
+    help: use Embassy executor within single "thread mode" thread
+    selects:
+      - has_executor_single_thread_support
+    provides_unique:
+      - executor
+    conflicts:
+      - sw/threading
+    env:
+      global:
+        FEATURES:
+          - ariel-os/executor-single-thread
+
+  - name: has_executor_single_thread_support
+    selects:
+      - doc-only
+
+  # Enabled for MCU families that provide a dedicated software interrupt (SWI),
+  # and thus do not require to sacrifice another, arbitrarily-chosen peripheral
+  # interrupt.
+  - name: executor-interrupt
+    help: use the Embassy interrupt executor
+    selects:
+      - has_swi
+    provides_unique:
+      - executor
+    env:
+      global:
+        FEATURES:
+          - ariel-os/executor-interrupt
+
+  - name: executor-default
+    help: executor preference
+    selects:
+      # This is order dependent.
+      # Unless otherwise selected (by application, context, on cli, or by other
+      # dependencies), the interrupt executor is preferred.
+      - ?executor-interrupt
+      - ?executor-single-thread
+      - ?executor-thread
+
+  - name: single-core
+    help: usage platform as single-core system
+    provides_unique:
+      - critical-section
+    env:
+      global:
+        FEATURES:
+          - ariel-os/single-core
+
+  - name: multi-core
+    help: usage platform as multi-core system
+    selects:
+      - has_multi_core_support
+    provides_unique:
+      - critical-section
+    env:
+      global:
+        FEATURES:
+          - ariel-os/multi-core
+
+  - name: has_multi_core_support
+    selects:
+      - doc-only
+
+  - name: rtt-target
+    help: use rtt-target in ariel-os-debug
+    provides_unique:
+      - ariel-os-debug-backend
+    env:
+      global:
+        FEATURES:
+          - ariel-os/rtt-target
+
+  - name: esp-println
+    help: use esp-println in ariel-os-debug
+    context:
+      - esp
+    provides_unique:
+      - ariel-os-debug-backend
+    env:
+      global:
+        CARGO_RUNNER: '"espflash flash --monitor ${ESPFLASH_LOG_FORMAT}"'
+        FEATURES:
+          - ariel-os/esp-println
+
+  - name: semihosting
+    help: enable semihosting in ariel-os-debug
+    env:
+      global:
+        FEATURES:
+          - ariel-os/semihosting
+
+  - name: host-test-only
+    help: This application produces no .elf (it only has *cargo* tests)
+    context:
+      - host
+    env:
+      global:
+        SKIP_CARGO_BUILD: "1"
+        RUSTFLAGS:
+          - -Dwarnings
+    tasks:
+      test:
+        help: runs `cargo test` for this crate
+        export:
+          - RUSTFLAGS
+          - RUSTDOCFLAGS
+        build: false
+        workdir: ${appdir}
+        cmd:
+          - ${CARGO} test --features _test
+
+  - name: embedded-test
+    context: ariel-os
+    selects:
+      # There is an issue with multi-core on esp.
+      - ?esp-single-core
+      - sw/threading
+      - rtt-target
+      - probe-rs
+    tasks:
+      test:
+        cmd:
+          - ${CARGO_ENV} ${CARGO} ${CARGO_TOOLCHAIN} ${CARGO_ARGS} -Z unstable-options -C${appdir} test ${FEATURES}
+        build: false
+
+    env:
+      global:
+        RUSTFLAGS:
+          - -Clink-arg=-Tembedded-test.x
+
+  # This helper module works around laze not supporting sth like "if context == foo then depend on bar".
+  - name: esp-single-core
+    help: force single core only on esp
+    context: esp
+    selects:
+      - single-core
+
+  - name: embedded-test-only
+    help: This application produces no .elf (it only has *embedded* tests)
+    selects:
+      - embedded-test
+    env:
+      global:
+        SKIP_CARGO_BUILD: "1"
+
+  - name: ferrocene
+    help: build using Ferrocene qualified Rust compiler
+    context:
+      # actually, all Cortex-M currently supported by Ariel OS
+      - nrf
+      - rp
+      - stm32
+      # running the host tooling with ferrocene is also supported
+      - host
+    env:
+      global:
+        CARGO_WRAPPER:
+          - criticalup run
+
+builders:
+  # host builder (for housekeeping tasks)
+  - name: host
+    rules:
+      # currently, laze requires a LINK rule for every context/builder
+      # that gets an application configured.
+      # so, provide a dummy one for `host`
+      - name: LINK
+        description: "HOST LINK (no-op)"
+        cmd: "true"
+
+    tasks:
+      install-toolchain:
+        build: false
+        cmd:
+          # If this starts doing anything else other than rustup and espup, update the book that currently claims this to be rustup only.
+          - rustup target add thumbv6m-none-eabi
+          - rustup target add thumbv7m-none-eabi
+          - rustup target add thumbv7em-none-eabi
+          - rustup target add thumbv7em-none-eabihf
+          - rustup target add thumbv8m.main-none-eabi
+          - rustup target add thumbv8m.main-none-eabihf
+          - rustup target add riscv32imc-unknown-none-elf
+          - rustup target add riscv32imac-unknown-none-elf
+          - rustup component add rust-src
+          - if command -v espup >/dev/null; then espup update --targets=esp32,esp32s3; fi
+
+      install-c2rust:
+        build: false
+        cmd:
+          - echo "Installing c2rust..."
+          - 'echo "WARNING: This uses *a lot* of memory!"'
+          - cargo install c2rust
+
+  - name: nrf52dk
+    parent: nrf52832
+
+  - name: nrf52840dk
+    parent: nrf52840
+    provides:
+      - has_usb_device_port
+
+  - name: dwm1001
+    parent: nrf52832
+
+  - name: nrf52840-mdk
+    parent: nrf52840
+    env:
+      OPENOCD_ADAPTER_INIT:
+        - " -c 'source [find interface/cmsis-dap.cfg]'"
+
+  - name: bbc-microbit
+    parent: bbc-microbit-base
+    env:
+      CARGO_RUNNER:
+        - ${relroot}/${SCRIPTS}/debug-openocd.sh
+      OPENOCD_ARGS:
+        - "-f board/nordic_nrf52_dk.cfg"
+
+  - name: bbc-microbit-qemu
+    parent: bbc-microbit-base
+    env:
+      CARGO_RUNNER:
+        - '"qemu-system-arm -machine microbit -nographic -semihosting-config enable=on,target=native -s -S -kernel"'
+      QEMU_MACHINE: microbit
+    tasks:
+      qemu:
+        build: true
+        cmd:
+          - ${QEMU_SYSTEM_ARM} ${out}
+
+    disables:
+      - periph_rtt
+
+  - name: bbc-microbit-v2
+    parent: nrf52833
+
+  - name: particle-xenon
+    parent: nrf52840
+    provides:
+      - has_usb_device_port
+
+  - name: rpi-pico
+    parent: rp2040
+    provides:
+      - has_usb_device_port
+
+  - name: rpi-pico-w
+    parent: rp2040
+    provides:
+      - has_usb_device_port
+      - has_wifi_cyw43
+
+  - name: rpi-pico2
+    parent: rp235xa
+    provides:
+      - has_usb_device_port
+
+  - name: rpi-pico2-w
+    parent: rp235xa
+    provides:
+      - has_usb_device_port
+      - has_wifi_cyw43
+
+  - name: ai-c3
+    parent: esp-c3-01m
+
+  - name: espressif-esp32-devkitc
+    parent: esp-wroom-32
+
+  - name: espressif-esp32-c6-devkitc-1
+    parent: esp32-c6-wroom-1
+
+  - name: espressif-esp32-s3-devkitc-1
+    parent: esp32-s3-wroom-1
+    provides:
+      - has_usb_device_port
+
+  - name: nrf5340dk
+    parent: nrf5340
+    provides:
+      - has_usb_device_port
+
+  - name: st-nucleo-c031c6
+    parent: stm32c031c6
+    provides:
+      - has_swi
+    env:
+      CARGO_ENV:
+        # This ISR is unused on a naked board. Configured here for testing.
+        - CONFIG_SWI=USART2
+
+  # TODO: there also is a companion nrf52840 on this board
+  - name: nrf9160dk
+    parent: nrf9160
+
+  - name: st-nucleo-f401re
+    parent: stm32f401re
+    provides:
+      - has_swi
+    env:
+      CARGO_ENV:
+        # This ISR is unused on a naked board. Configured here for testing.
+        - CONFIG_SWI=USART2
+
+  - name: st-nucleo-h755zi-q
+    parent: stm32h755zi
+    provides:
+      - has_swi
+      - has_usb_device_port
+    env:
+      CARGO_ENV:
+        # This ISR is unused on a naked board. Configured here for testing.
+        - CONFIG_SWI=UART5
+
+  - name: st-nucleo-wb55
+    parent: stm32wb55rg
+    provides:
+      - has_swi
+      - has_usb_device_port
+    env:
+      CARGO_ENV:
+        # This ISR is unused on a naked board. Configured here for testing.
+        - CONFIG_SWI=LPUART1
+
+  - name: st-nucleo-wba55
+    parent: stm32wba55cg
+    provides:
+      - has_swi
+    env:
+      CARGO_ENV:
+        # This ISR is unused on a naked board. Configured here for testing.
+        - CONFIG_SWI=LPUART1
+
+apps:
+  # define a dummy host application so the host tasks work
+  - name: host
+    context: host
 
 subdirs:
   - benchmarks
