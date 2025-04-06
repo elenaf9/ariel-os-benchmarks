@@ -1,7 +1,6 @@
 [workspace]
 members = [
   "benchmarks/bench_*",
-  "benchmarks/runqueue/bench_*",
   "bench-multicore",
 ]
 resolver = "2"
@@ -18,8 +17,6 @@ ariel-os = { git = "https://github.com/ariel-os/ariel-os", rev = "4b3eebd01d7e5a
   "bench",
 ] }
 ariel-os-boards = { git = "https://github.com/ariel-os/ariel-os", rev = "4b3eebd01d7e5a4858cb110a4321396e597861f2" }
-ariel-os-embassy = { git = "https://github.com/ariel-os/ariel-os", rev = "4b3eebd01d7e5a4858cb110a4321396e597861f2" }
-ariel-os-runqueue = { git = "https://github.com/ariel-os/ariel-os", rev = "4b3eebd01d7e5a4858cb110a4321396e597861f2" }
 
 embassy-embedded-hal = { version = "0.2.0", default-features = false }
 embassy-executor = { version = "0.6.3", default-features = false }
