@@ -89,3 +89,4 @@ subdirs:
   - bench_fib
   - bench_matrix_mult
   - bench_thread_flags
+  - bench_thread_flags_preempt
