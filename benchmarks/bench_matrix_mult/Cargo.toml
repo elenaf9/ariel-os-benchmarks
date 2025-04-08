@@ -14,8 +14,6 @@ bench-multicore = { workspace = true }
 ariel-os = { workspace = true }
 ariel-os-boards = { workspace = true }
 
-embassy-executor = { workspace = true }
-
 [features]
 dual-core = []
 reallocation = []
