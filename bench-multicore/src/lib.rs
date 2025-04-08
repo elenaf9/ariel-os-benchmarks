@@ -16,6 +16,15 @@ pub enum Error {
     Migrated,
 }
 
+pub fn benchmark_complex<F: FnMut() -> ()>(iterations: usize, mut f: F) -> Result<usize, Error> {
+    let mut total = 0;
+
+    for _ in 0..iterations {
+        total += benchmark(1, &mut f)?;
+    }
+    Ok(total / iterations)
+}
+
 pub fn benchmark<F: FnMut() -> ()>(iterations: usize, f: F) -> Result<usize, Error> {
     #[cfg(feature = "multicore")]
     let core = ariel_os::thread::core_id();
