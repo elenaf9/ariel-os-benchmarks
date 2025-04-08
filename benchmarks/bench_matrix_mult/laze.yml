@@ -27,7 +27,37 @@ modules:
       global:
         FEATURES:
           - n40
+  - name: n50
+    provides_unique:
+      - size
+    env:
+      global:
+        FEATURES:
+          - n50
+  - name: n60
+    provides_unique:
+      - size
+    env:
+      global:
+        FEATURES:
+          - n60
+  - name: n70
+    provides_unique:
+      - size
+    env:
+      global:
+        FEATURES:
+          - n70
+  - name: n80
+    provides_unique:
+      - size
+    env:
+      global:
+        FEATURES:
+          - n80
 apps:
   - name: bench_matrix_mult
     selects: 
       - size
+    conflicts:
+      - ariel-reallocation

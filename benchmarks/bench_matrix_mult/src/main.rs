@@ -7,9 +7,9 @@
 
 use core::usize;
 
+use ariel_os::debug::log::*;
 #[cfg(feature = "dual-core")]
 use ariel_os::thread::sync::Channel;
-use ariel_os::{debug::log::*, thread};
 
 #[cfg(feature = "dual-core")]
 static INPUT_CHANNEL: Channel<([[u16; N]; N / 2], [[u16; N]; N])> = Channel::new();
@@ -24,6 +24,14 @@ const N: usize = 20;
 const N: usize = 30;
 #[cfg(feature = "n40")]
 const N: usize = 40;
+#[cfg(feature = "n50")]
+const N: usize = 50;
+#[cfg(feature = "n60")]
+const N: usize = 60;
+#[cfg(feature = "n70")]
+const N: usize = 70;
+#[cfg(feature = "n80")]
+const N: usize = 80;
 
 fn matrix_mult(matrix_a: &[[u16; N]], matrix_b: &[[u16; N]], matrix_c: &mut [[u16; N]]) {
     for i in 0..N / 2 {
@@ -35,20 +43,12 @@ fn matrix_mult(matrix_a: &[[u16; N]], matrix_b: &[[u16; N]], matrix_c: &mut [[u1
     }
 }
 
-#[ariel_os::task(autostart)]
-async fn start() {
-    thread::thread_flags::set(thread::ThreadId::new(0), 1);
-}
-
-#[ariel_os::thread(autostart, stacksize = 32768)]
+#[ariel_os::thread(autostart, stacksize = 65536)]
 fn thread0() {
-    // while thread::thread_flags::get() == 0 {}
-    thread::thread_flags::wait_any(1);
-
     let matrix_a = core::hint::black_box([[3; N]; N]);
     let matrix_b = core::hint::black_box([[7; N]; N]);
 
-    match bench_multicore::benchmark(10, || {
+    match bench_multicore::benchmark_complex(100, || {
         let mut matrix_c = core::hint::black_box([[0; N]; N]);
 
         let mut matrix_a_iter = matrix_a.array_chunks::<{ N / 2 }>();
@@ -80,7 +80,7 @@ fn thread0() {
 }
 
 #[cfg(feature = "dual-core")]
-#[ariel_os::thread(autostart, stacksize = 32768)]
+#[ariel_os::thread(autostart, stacksize = 65536)]
 fn thread1() {
     loop {
         let (matrix_a, matrix_b) = INPUT_CHANNEL.recv();

@@ -94,7 +94,7 @@ dual_core_benchmarks(){
         BENCHMARKS+=("benchmarks/bench_fib -s $type")
     done
 
-    for i in $(seq 10 10 40)
+    for i in $(seq 10 10 80)
     do
         BENCHMARKS+=("benchmarks/bench_matrix_mult -s n$i")
     done
