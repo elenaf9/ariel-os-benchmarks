@@ -23,7 +23,7 @@ subprocess(){
     set -m
     # Build once first so that timeout doesn't cancel slow builds.
     laze build -C $benchmark_name -b $board -s $source &> /dev/null
-    timeout -v 30s laze build -C $benchmark_name -b $board -s $source run 2>&1 &
+    timeout -v 60s laze build -C $benchmark_name -b $board -s $source run 2>&1 &
     echo "$!"
 }
 
