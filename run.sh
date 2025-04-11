@@ -89,11 +89,6 @@ single_core_benchmarks(){
 dual_core_benchmarks(){
     BENCHMARKS=("benchmarks/bench_thread_flags -s t4")
 
-    for type in none fib loop
-    do
-        BENCHMARKS+=("benchmarks/bench_fib -s $type")
-    done
-
     for i in $(seq 10 10 80)
     do
         BENCHMARKS+=("benchmarks/bench_matrix_mult -s n$i")
