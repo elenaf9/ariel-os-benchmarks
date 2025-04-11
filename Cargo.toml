@@ -10,10 +10,10 @@ authors = ["Elena Frank <elena.frank@proton.me>"]
 [workspace.dependencies]
 bench-multicore = { path = "bench-multicore" }
 
-ariel-os = { git = "https://github.com/ariel-os/ariel-os", rev = "fb349e9bbc98697bd23b32e39d28b0536b773eec", features = [
+ariel-os = { git = "https://github.com/ariel-os/ariel-os", rev = "9b4e4e0d70ac81bf78d2efcaf2d240ff0097a187", features = [
   "bench",
 ] }
-ariel-os-boards = { git = "https://github.com/ariel-os/ariel-os", rev = "fb349e9bbc98697bd23b32e39d28b0536b773eec" }
+ariel-os-boards = { git = "https://github.com/ariel-os/ariel-os", rev = "9b4e4e0d70ac81bf78d2efcaf2d240ff0097a187" }
 
 cortex-m = { version = "0.7", default-features = false }
 esp-hal = { version = "0.23.1", default-features = false, features = [
