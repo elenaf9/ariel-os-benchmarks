@@ -20,7 +20,7 @@ async fn start() {
 fn thread0() {
     thread_flags::wait_all(1);
     thread_flags::set(ThreadId::new(0), 1);
-    match bench_multicore::benchmark(10000, || {
+    match bench_multicore::benchmark(1000, || {
         thread_flags::wait_all(1);
         thread_flags::set(ThreadId::new(1), 1);
     }) {

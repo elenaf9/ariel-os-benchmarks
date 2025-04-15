@@ -14,7 +14,7 @@ static ID_EXCHANGE: Channel<ThreadId> = Channel::new();
 fn thread0() {
     let target_pid = ID_EXCHANGE.recv();
 
-    match bench_multicore::benchmark(10000, || {
+    match bench_multicore::benchmark(1000, || {
         thread_flags::set(target_pid, 1);
     }) {
         Ok(ticks) => info!("took {} ticks per iteration", ticks),
