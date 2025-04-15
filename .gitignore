@@ -4,7 +4,7 @@ output.txt
 data/
 env/
 graphs/
-Cargo.lock
+# Cargo.lock
 *.py
 csvs/
 # *.sh
